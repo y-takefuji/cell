@@ -72,5 +72,5 @@ scores = cross_val_score(
 
 mean_acc = scores.mean()
 sd_acc   = scores.std()
-print(f"\nMean Accuracy ± SD (10‐fold CV – DecisionTree): "
-      f"{mean_acc:.4f} ± {sd_acc:.4f}")
+print(f"\nMean Accuracy ± SD (10-fold CV): {mean_acc:.4f} ± {sd_acc:.4f}") 
+
