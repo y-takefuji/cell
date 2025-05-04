@@ -8,66 +8,81 @@ import pandas as pd
 
 from sklearn.preprocessing   import StandardScaler, LabelEncoder
 from sklearn.linear_model    import LinearRegression
-from sklearn.metrics         import make_scorer, accuracy_score
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.metrics         import accuracy_score
+from sklearn.model_selection import StratifiedKFold
 
+# ----------------------------------------------------------------
 # 1) LOAD & CLEAN
+# ----------------------------------------------------------------
 filename = 'data.csv'
 print("loading:", filename)
 df = pd.read_csv(filename).fillna(0)
 
+# ----------------------------------------------------------------
 # 2) EXTRACT & ENCODE TARGET
+# ----------------------------------------------------------------
 y_raw = df.pop("vital.status").values
 le    = LabelEncoder()
-y     = le.fit_transform(y_raw)    # e.g. 0/1 classes
+y     = le.fit_transform(y_raw)    # 0/1
 
+# ----------------------------------------------------------------
 # 3) STANDARDIZE ALL ORIGINAL FEATURES
+# ----------------------------------------------------------------
 feature_names = df.columns.tolist()
 scaler        = StandardScaler()
 X_scaled      = scaler.fit_transform(df.values)
-# shape == (n_samples, n_features)
 
+# ----------------------------------------------------------------
 # 4) LINEAR REGRESSION FEATURE SELECTION
+# ----------------------------------------------------------------
 n_feats = 10
 fs_lr   = LinearRegression()
 fs_lr.fit(X_scaled, y)
-coefs      = fs_lr.coef_  # shape = (n_features,)
-feat_scores = pd.Series(np.abs(coefs), index=feature_names)\
+
+importances = np.abs(fs_lr.coef_)
+feat_scores = pd.Series(importances, index=feature_names) \
                 .sort_values(ascending=False)
 
 top_feats = feat_scores.index[:n_feats].tolist()
 print(f"\nTop {n_feats} features by |LinearRegression coef|:")
 print(feat_scores.head(n_feats))
 
-# 5) SUBSET DATA TO THOSE TOP FEATURES & RE‐STANDARDIZE
+# Subset & re-standardize selected features
 X_sel        = df[top_feats].values
 scaler2      = StandardScaler()
 X_sel_scaled = scaler2.fit_transform(X_sel)
 
-# 6) LINEAR REGRESSION “CLASSIFIER” + 10‐FOLD STRATIFIED CV
-lr_model = LinearRegression()
+# ----------------------------------------------------------------
+# 5) WRAP OLS INTO A “CLASSIFIER”
+# ----------------------------------------------------------------
+class LinRegClassifier:
+    def __init__(self):
+        self.lr = LinearRegression()
 
-# custom scorer: threshold at 0.5
-def lr_acc(y_true, y_pred_cont):
-    y_pred = (y_pred_cont > 0.5).astype(int)
-    return accuracy_score(y_true, y_pred)
+    def fit(self, X, y):
+        self.lr.fit(X, y)
+        return self
 
-acc_scorer = make_scorer(lr_acc)
+    def predict(self, X):
+        y_cont = self.lr.predict(X)
+        return (y_cont > 0.5).astype(int)
 
-cv = StratifiedKFold(
-    n_splits=10,
-    shuffle=True,
-    random_state=0
-)
+# ----------------------------------------------------------------
+# 6) MANUAL STRATIFIED 10-FOLD CV & ACCURACY
+# ----------------------------------------------------------------
+cv             = StratifiedKFold(n_splits=10, shuffle=True, random_state=0)
+fold_accuracies = []
 
-scores = cross_val_score(
-    lr_model,
-    X_sel_scaled,
-    y,
-    cv=cv,
-    scoring=acc_scorer
-)
+for train_idx, test_idx in cv.split(X_sel_scaled, y):
+    Xtr, Xte = X_sel_scaled[train_idx], X_sel_scaled[test_idx]
+    ytr, yte = y[train_idx],         y[test_idx]
 
-mean_acc = scores.mean()
-sd_acc   = scores.std()
-print(f"\nMean Accuracy ± SD (10-fold CV): {mean_acc:.4f} ± {sd_acc:.4f}") 
+    clf    = LinRegClassifier().fit(Xtr, ytr)
+    y_pred = clf.predict(Xte)
+    fold_accuracies.append(accuracy_score(yte, y_pred))
+
+fold_accuracies = np.array(fold_accuracies)
+mean_acc        = fold_accuracies.mean()
+sd_acc          = fold_accuracies.std()
+
+print(f"\nMean Accuracy ± SD (10-fold CV): {mean_acc:.4f} ± {sd_acc:.4f}")
