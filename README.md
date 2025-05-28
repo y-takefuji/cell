@@ -12,4 +12,20 @@ ICA - 5-fold CV Accuracy: 0.8596 ± 0.0053
 HVGS - 5-fold CV Accuracy: 0.8794 ± 0.0215
 Feature Agglomeration - 5-fold CV Accuracy: 0.8667 ± 0.0069
 
+$python cv5f10.py
+Lasso - 5-fold CV Accuracy: 0.8752 ± 0.0146
+Logistic - 5-fold CV Accuracy: 0.8794 ± 0.0135
+PCA - 5-fold CV Accuracy: 0.8695 ± 0.0085
+HVGs - 5-fold CV Accuracy: 0.8794 ± 0.0215
+Random Forest - 5-fold CV Accuracy: 0.8851 ± 0.0113
+
+$python cv5f9.py
+Lasso - 5-fold CV Accuracy: 0.8809 ± 0.0122
+Logistic - 5-fold CV Accuracy: 0.8780 ± 0.0122
+PCA - 5-fold CV Accuracy: 0.8809 ± 0.0138
+HVGs - 5-fold CV Accuracy: 0.8809 ± 0.0187
+Random Forest - 5-fold CV Accuracy: 0.8922 ± 0.0138
+
+
+
 </pre>
