@@ -1,5 +1,9 @@
 # cell
 <pre>
+$ python omicstransfpca.py 
+(PCA without scaling) - Accuracy: 0.8695 (±0.0085)
+(PCA with scaling) - Accuracy: 0.7716 (±0.0309)
+  
 $ python cv3-109f.py
 | Method | Top 10 accuracy±std | Top 9 accuracy±std | Consistency |           
 | HVGS | 0.8794 ± 0.0215 | 0.8809 ± 0.0187 | Pass |
