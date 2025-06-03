@@ -12,9 +12,9 @@ $ python cv3-109f.py
 
 $python cv4-5f.py
 PCA - 5-fold CV Accuracy: 0.7730 ± 0.0311
-ICA - 5-fold CV Accuracy: 0.8596 ± 0.0053
+ICA - 5-fold CV Accuracy: 0.8766 ± 0.0106
 HVGS - 5-fold CV Accuracy: 0.8794 ± 0.0215
-Feature Agglomeration - 5-fold CV Accuracy: 0.8667 ± 0.0069
+Feature Agglomeration - 5-fold CV Accuracy: 0.8780 ± 0.0164
 
 $python cv5f10.py
 Lasso - 5-fold CV Accuracy: 0.8752 ± 0.0146
