@@ -1,176 +1,278 @@
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import cross_val_score, StratifiedKFold
+from sklearn.model_selection import cross_val_score
 from sklearn.cluster import FeatureAgglomeration
-from sklearn.metrics import accuracy_score
+import xgboost as xgb
 from scipy.stats import spearmanr
+from collections import Counter
+import warnings
+warnings.filterwarnings('ignore')
 
-# Load the data
-def load_data(file_path='data.csv'):
-    data = pd.read_csv(file_path)
-    X = data.drop('vital.status', axis=1)
-    y = data['vital.status']
-    return X, y
+# Load the dataset
+df = pd.read_csv('data.csv')
+X = df.drop('vital.status', axis=1)
+y = df['vital.status']
 
-def random_forest_feature_selection(X, y, n_features=10):
-    """Select top features using Random Forest importance"""
-    rf = RandomForestClassifier(n_estimators=100, random_state=42)
-    rf.fit(X, y)
-    importances = rf.feature_importances_
-    indices = np.argsort(importances)[::-1]
-    features = X.columns[indices]
-    return features[:n_features], importances[indices[:n_features]]
-
-def feature_agglomeration_selection(X, y, n_features=10):
-    """Select features using feature agglomeration"""
-    # Apply feature agglomeration directly without scaling
-    agglo = FeatureAgglomeration(n_clusters=n_features)
-    agglo.fit(X)
+# Function to perform feature selection
+def select_features(X, y, method='random_forest', n_features=10):
+    selected_features = []
+    feature_rankings = {}
     
-    # Calculate feature importance for each cluster
-    cluster_importances = []
-    for i in range(n_features):
-        cluster_mask = (agglo.labels_ == i)
-        feature_indices = np.where(cluster_mask)[0]
+    # Feature selection methods
+    if method == 'random_forest':
+        model = RandomForestClassifier(random_state=42)
+        model.fit(X, y)
+        feature_importances = model.feature_importances_
+        feature_rankings = dict(zip(X.columns, feature_importances))
+        indices = np.argsort(feature_importances)[::-1]
+        selected_features = X.columns[indices[:n_features]].tolist()
         
-        # For each cluster, select the feature with highest correlation with target
+    elif method == 'xgboost':
+        model = xgb.XGBClassifier(random_state=42)
+        model.fit(X, y)
+        feature_importances = model.feature_importances_
+        feature_rankings = dict(zip(X.columns, feature_importances))
+        indices = np.argsort(feature_importances)[::-1]
+        selected_features = X.columns[indices[:n_features]].tolist()
+        
+    elif method == 'feature_agglomeration':
+        # Create clusters of features
+        n_clusters = min(X.shape[1] // 2, 100)  # Using a reasonable number of clusters
+        fa = FeatureAgglomeration(n_clusters=n_clusters)
+        fa.fit(X)
+        clusters = fa.labels_
+        
+        # Calculate variance for each feature
+        variances = X.var().to_dict()
+        
+        # Create a list of (feature, variance, cluster) tuples
+        feature_info = [(col, variances[col], clusters[i]) for i, col in enumerate(X.columns)]
+        
+        # Sort by variance (descending)
+        feature_info.sort(key=lambda x: x[1], reverse=True)
+        
+        # Track selected clusters to avoid picking multiple features from same cluster
+        selected_clusters = set()
+        selected_features = []
+        
+        # Select top features across all clusters
+        for feature, variance, cluster in feature_info:
+            if len(selected_features) >= n_features:
+                break
+            
+            if cluster not in selected_clusters:
+                selected_features.append(feature)
+                selected_clusters.add(cluster)
+                feature_rankings[feature] = variance
+        
+        # If we need more features, allow multiple features from same cluster
+        if len(selected_features) < n_features:
+            remaining = [f for f, v, c in feature_info if f not in selected_features]
+            for feature in remaining:
+                if len(selected_features) >= n_features:
+                    break
+                selected_features.append(feature)
+                feature_rankings[feature] = variances[feature]
+        
+    elif method == 'hvgs':
+        variances = X.var().sort_values(ascending=False)
+        feature_rankings = dict(zip(variances.index, variances))
+        selected_features = variances.index[:n_features].tolist()
+        
+    elif method == 'spearman':
         correlations = []
-        for idx in feature_indices:
-            corr, _ = spearmanr(X.iloc[:, idx], y)
-            correlations.append((abs(corr), idx))
+        p_values = []
+        for col in X.columns:
+            corr, p_val = spearmanr(X[col], y)
+            correlations.append(abs(corr))
+            p_values.append(p_val)
+            feature_rankings[col] = abs(corr)
         
-        if correlations:
-            # Select the feature with highest correlation in this cluster
-            max_corr_idx = max(correlations, key=lambda x: x[0])[1]
-            cluster_importances.append((X.columns[max_corr_idx], max_corr_idx))
-    
-    # Sort by absolute correlation
-    selected_features = [feat for feat, _ in cluster_importances[:n_features]]
-    importance_values = [abs(spearmanr(X[feat], y)[0]) for feat in selected_features]
-    
-    return selected_features, importance_values
-
-def highly_variable_gene_selection(X, y, n_features=10):
-    """Select features with highest variance"""
-    variances = np.var(X, axis=0)
-    indices = np.argsort(variances)[::-1]
-    features = X.columns[indices]
-    return features[:n_features], variances[indices[:n_features]]
-
-def spearman_correlation_selection(X, y, n_features=10):
-    """Select features with highest absolute Spearman correlation with target"""
-    correlations = []
-    p_values = []
-    
-    for col in X.columns:
-        corr, p_val = spearmanr(X[col], y)
-        correlations.append(abs(corr))
-        p_values.append(p_val)
-    
-    # Create a dataframe with results
-    corr_df = pd.DataFrame({
-        'feature': X.columns,
-        'correlation': correlations,
-        'p_value': p_values
-    })
-    
-    # Sort by absolute correlation value
-    corr_df = corr_df.sort_values('correlation', ascending=False).reset_index(drop=True)
-    
-    return corr_df['feature'].values[:n_features], corr_df['correlation'].values[:n_features]
-
-def evaluate_feature_set(X, y, features, cv_folds=5):
-    """Evaluate a feature set using cross-validation with Random Forest"""
-    X_reduced = X[features]
-    rf = RandomForestClassifier(n_estimators=100, random_state=42)
-    
-    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
-    scores = cross_val_score(rf, X_reduced, y, cv=cv, scoring='accuracy')
-    
-    return scores.mean(), scores.std()
-
-def test_stability(X, y, feature_selection_func):
-    """Test stability by removing top feature and comparing rankings"""
-    # Get original top 10 features
-    top_features, _ = feature_selection_func(X, y, 10)
-    
-    # Remove top feature
-    X_reduced = X.drop(top_features[0], axis=1)
-    
-    # Get new top 9 features from the reduced dataset
-    new_top_features, _ = feature_selection_func(X_reduced, y, 9)
-    
-    # Compare remaining 9 features from original top 10 (excluding the removed top feature)
-    # with the new top 9 features
-    original_remaining_features = set(top_features[1:10])
-    new_features_set = set(new_top_features)
-    
-    # Calculate stability metrics
-    common_features = original_remaining_features.intersection(new_features_set)
-    stability_score = len(common_features) / 9  # Comparing 9 features
-    
-    return stability_score, list(top_features[1:10]), list(new_top_features)
-
-def main():
-    # Load data
-    X, y = load_data()
-    
-    # Define feature selection methods
-    selection_methods = {
-        'Random Forest': random_forest_feature_selection,
-        'Feature Agglomeration': feature_agglomeration_selection,
-        'Highly Variable': highly_variable_gene_selection,
-        'Spearman Correlation': spearman_correlation_selection
-    }
-    
-    # Results storage
-    results = []
-    
-    # For each method
-    for method_name, selection_func in selection_methods.items():
-        print(f"\n=== {method_name} Feature Selection ===")
-        
-        # Select top features
-        selected_features, importance_values = selection_func(X, y, 10)
-        print("Top 10 features:")
-        for i, (feature, importance) in enumerate(zip(selected_features, importance_values)):
-            print(f"{i+1}. {feature}: {importance:.4f}")
-        
-        # Evaluate with cross-validation using the top 10 features
-        cv_mean_10, cv_std_10 = evaluate_feature_set(X, y, selected_features)
-        print(f"Cross-validation accuracy (10 features): {cv_mean_10:.4f} ± {cv_std_10:.4f}")
-        
-        # Test stability after removing top feature
-        stability_score, original_remaining, new_top9 = test_stability(X, y, selection_func)
-        stability_status = "Stable" if stability_score >= 0.7 else "Unstable"
-        
-        # Evaluate with cross-validation using the top 9 features (after removing top feature)
-        cv_mean_9, cv_std_9 = evaluate_feature_set(X, y, new_top9)
-        
-        print(f"Cross-validation accuracy (9 features): {cv_mean_9:.4f} ± {cv_std_9:.4f}")
-        print(f"Stability score: {stability_score:.2f} ({stability_status})")
-        print(f"Original remaining features (positions 2-10): {original_remaining}")
-        print(f"New top 9 features: {new_top9}")
-        
-        # Store results
-        results.append({
-            'Method': method_name,
-            'Top 10 Features': selected_features,
-            'CV Accuracy (10)': cv_mean_10,
-            'CV STD (10)': cv_std_10,
-            'CV Accuracy (9)': cv_mean_9,
-            'CV STD (9)': cv_std_9,
-            'Stability Score': stability_score,
-            'Stability Status': stability_status
+        feature_corrs = pd.DataFrame({
+            'feature': X.columns,
+            'correlation': correlations,
+            'p_value': p_values
         })
+        
+        feature_corrs = feature_corrs.sort_values(['correlation', 'p_value'], 
+                                                ascending=[False, True])
+        selected_features = feature_corrs['feature'][:n_features].tolist()
     
-    # Create summary table
-    results_df = pd.DataFrame(results)
-    print("\n=== Summary of Results ===")
-    print(results_df[['Method', 'CV Accuracy (10)', 'CV STD (10)', 
-                     'CV Accuracy (9)', 'CV STD (9)', 
-                     'Stability Score', 'Stability Status']])
+    return selected_features, feature_rankings
 
-if __name__ == "__main__":
-    main()
+# Function to perform cross-validation
+def perform_cv(X, y, features, cv_model='random_forest'):
+    X_selected = X[features]
+    
+    if cv_model == 'random_forest':
+        model = RandomForestClassifier(random_state=42)
+    elif cv_model == 'xgboost':
+        model = xgb.XGBClassifier(random_state=42)
+    
+    scores = cross_val_score(model, X_selected, y, cv=5, scoring='accuracy')
+    return scores.mean()
+
+# Function to calculate stability in feature selection
+def calculate_stability(features_list):
+    all_features = []
+    for features in features_list:
+        all_features.extend(features)
+    
+    counts = Counter(all_features)
+    stability_score = sum([counts[f] for f in counts if counts[f] > 1]) / sum(counts.values())
+    
+    return stability_score, counts
+
+# Define methods and their corresponding CV models
+methods = {
+    'random_forest': 'random_forest',
+    'xgboost': 'xgboost',
+    'feature_agglomeration': 'random_forest',
+    'hvgs': 'random_forest',
+    'spearman': 'random_forest'
+}
+
+# Step 1: Select top 10 features for each method
+top10_features = {}
+top10_cv_scores = {}
+feature_rankings = {}
+
+print("Top 10 Feature Selection:")
+print("-" * 50)
+
+for method, cv_model in methods.items():
+    selected_features, rankings = select_features(X, y, method=method, n_features=10)
+    top10_features[method] = selected_features
+    feature_rankings[method] = rankings
+    
+    # Cross-validation with top 10 features
+    cv_score = perform_cv(X, y, selected_features, cv_model=cv_model)
+    top10_cv_scores[method] = cv_score
+    
+    print(f"{method.upper()} top 10 features:")
+    for i, feature in enumerate(selected_features, 1):
+        print(f"  {i}. {feature}")
+    print(f"Cross-validation accuracy: {cv_score:.4f}")
+    print("-" * 50)
+
+# Step 2: Create reduced datasets by removing the top feature
+top1_features = {}
+reduced_datasets = {}
+reduced_cv_scores = {}
+
+print("\nTop 1 Feature and Reduced Dataset Creation:")
+print("-" * 50)
+
+for method in methods:
+    # Get the top feature
+    top1_features[method] = top10_features[method][0]
+    
+    # Create reduced dataset by removing the top feature
+    reduced_datasets[method] = X.drop(top1_features[method], axis=1)
+    
+    # Cross-validate with only the top feature
+    top1_cv = perform_cv(X, y, [top1_features[method]], cv_model=methods[method])
+    
+    print(f"{method.upper()}:")
+    print(f"  Top 1 feature: {top1_features[method]}")
+    print(f"  Top 1 CV accuracy: {top1_cv:.4f}")
+    print(f"  Reduced dataset shape: {reduced_datasets[method].shape}")
+    print("-" * 50)
+
+# Step 3: Select top 9 features from the reduced datasets
+top9_from_reduced = {}
+top9_cv_scores = {}
+
+print("\nTop 9 Features from Reduced Datasets:")
+print("-" * 50)
+
+for method, cv_model in methods.items():
+    # Select top 9 features from reduced dataset
+    selected_features, _ = select_features(reduced_datasets[method], y, method=method, n_features=9)
+    top9_from_reduced[method] = selected_features
+    
+    # Cross-validation with top 9 features from reduced dataset
+    cv_score = perform_cv(reduced_datasets[method], y, selected_features, cv_model=cv_model)
+    top9_cv_scores[method] = cv_score
+    
+    print(f"{method.upper()} top 9 features from reduced dataset:")
+    for i, feature in enumerate(selected_features, 1):
+        print(f"  {i}. {feature}")
+    print(f"Cross-validation accuracy: {cv_score:.4f}")
+    print("-" * 50)
+
+# Step 4: Combine top 1 with top 9 from reduced dataset
+combined_features = {}
+combined_cv_scores = {}
+
+print("\nCombined Features (Top 1 + Top 9 from reduced):")
+print("-" * 50)
+
+for method, cv_model in methods.items():
+    # Combine top 1 with top 9 from reduced
+    combined = [top1_features[method]] + top9_from_reduced[method]
+    combined_features[method] = combined
+    
+    # Cross-validation with combined features
+    cv_score = perform_cv(X, y, combined, cv_model=cv_model)
+    combined_cv_scores[method] = cv_score
+    
+    print(f"{method.upper()} combined features:")
+    print(f"  Top 1: {combined[0]}")
+    print(f"  Next 9:")
+    for i, feature in enumerate(combined[1:], 2):
+        print(f"    {i}. {feature}")
+    print(f"Cross-validation accuracy: {cv_score:.4f}")
+    print("-" * 50)
+
+# Calculate stability for different feature sets
+print("\nFeature Selection Stability Analysis:")
+print("-" * 50)
+
+top10_stability, top10_counts = calculate_stability(top10_features.values())
+print(f"Stability score for top 10 features: {top10_stability:.4f}")
+print("Top 10 feature occurrence counts:")
+for feature, count in top10_counts.most_common(20):
+    print(f"  {feature}: {count}")
+print("-" * 50)
+
+combined_stability, combined_counts = calculate_stability(combined_features.values())
+print(f"Stability score for combined features: {combined_stability:.4f}")
+print("Combined feature occurrence counts:")
+for feature, count in combined_counts.most_common(20):
+    print(f"  {feature}: {count}")
+print("-" * 50)
+
+# Compare the performance of original top 10 vs combined features
+print("\nComparison of Cross-validation Accuracy:")
+print("-" * 50)
+print("Method | Top 10 | Combined (Top 1 + Top 9 from reduced)")
+print("-" * 50)
+for method in methods:
+    print(f"{method.ljust(15)} | {top10_cv_scores[method]:.4f} | {combined_cv_scores[method]:.4f}")
+print("-" * 50)
+
+# Calculate feature overlap between top 10 and combined selection
+print("\nFeature Overlap Between Top 10 and Combined Selection:")
+print("-" * 50)
+for method in methods:
+    overlap = set(top10_features[method]).intersection(set(combined_features[method]))
+    overlap_percentage = len(overlap) / 10 * 100
+    print(f"{method.ljust(15)}: {len(overlap)}/10 features ({overlap_percentage:.1f}%)")
+    print(f"  Common features: {', '.join(overlap)}")
+print("-" * 50)
+
+# Check ranking stability for overlapping features
+print("\nRanking Stability for Common Features:")
+print("-" * 50)
+for method in methods:
+    common_features = set(top10_features[method]).intersection(set(combined_features[method]))
+    if common_features:
+        print(f"{method.upper()}:")
+        for feature in common_features:
+            top10_idx = top10_features[method].index(feature) + 1
+            combined_idx = combined_features[method].index(feature) + 1
+            rank_change = abs(top10_idx - combined_idx)
+            print(f"  {feature}: Rank in top 10: {top10_idx}, Rank in combined: {combined_idx}, Change: {rank_change}")
+    print("-" * 50)
