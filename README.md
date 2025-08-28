@@ -1,5 +1,9 @@
 # cell
 <pre>
+$ python stability.py
+
+  
+  
 $ python omicstransfpca.py 
 (PCA without scaling) - Accuracy: 0.8695 (±0.0085)
 (PCA with scaling) - Accuracy: 0.7716 (±0.0309)
