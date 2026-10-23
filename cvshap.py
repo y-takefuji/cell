@@ -2,7 +2,8 @@
 Feature selection + leakage-free cross-validation pipeline
 -----------------------------------------------------------
 Data      : data.csv  (binary target column 'vital.status', values 0/1)
-Methods   : RF, RF-SHAP, XGB, XGB-SHAP, GMM, HVGS, Spearman
+            ground0 = alive (0), ground1 = death (1)
+Methods   : RF, RF-SHAP, XGB, XGB-SHAP, GMM, HVGS, Spearman, DEA
 
 Workflow
   1. Rank all features on the FULL feature set; take top-9.
@@ -14,9 +15,16 @@ Workflow
        RF, RF-SHAP            -> RandomForestClassifier
        XGB, XGB-SHAP          -> XGBClassifier
        GMM, HVGS, Spearman    -> RandomForestClassifier
+       DEA                    -> RandomForestClassifier
   3. Top-8 features (all methods):
        Remove the highest-ranked feature, refit the scorer on the
        reduced dataset, and reselect top-8.
+
+DEA (death-associated features):
+  - Binary features : Fisher's exact test, ground1 vs ground0
+  - Continuous      : Welch's t-test,      ground1 vs ground0
+  - Multiple testing: Benjamini-Hochberg adjusted p-values (p_adj)
+  - Score           : -p_adj  (most significant death-associated feature = highest)
 
 No scaling, no normalization, no transformation of any kind.
 Default model settings are used throughout.
@@ -28,6 +36,7 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy import stats
+from statsmodels.stats.multitest import multipletests
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.mixture import GaussianMixture
 from sklearn.model_selection import StratifiedKFold
@@ -52,6 +61,9 @@ TARGET = "vital.status"
 DATA_PATH = "data.csv"
 RESULT_PATH = "result.csv"
 
+GROUP_0 = 0             # ground0 = alive
+GROUP_1 = 1             # ground1 = death
+
 np.random.seed(RANDOM_STATE)
 
 
@@ -64,7 +76,7 @@ def load_data(path=DATA_PATH, target=TARGET):
         raise ValueError(f"Target column '{target}' not found in {path}.")
     df = df.dropna(subset=[target])
     y = df[target].astype(int)
-    if not set(y.unique()).issubset({0, 1}):
+    if not set(y.unique()).issubset({GROUP_0, GROUP_1}):
         raise ValueError("Target must be binary (0/1).")
     X = df.drop(columns=[target]).select_dtypes(include=[np.number])
     X = X.fillna(X.median())
@@ -155,6 +167,52 @@ def score_spearman(X, y):
     return pd.Series(out)
 
 
+def score_dea(X, y):
+    """DEA (death-associated features), following the association analysis:
+      - binary feature    : Fisher's exact test, ground1 vs ground0
+      - continuous feature: Welch's t-test,      ground1 vs ground0
+      - Benjamini-Hochberg correction across all features (p_adj)
+    Score = -p_adj, so the most significant death-associated features
+    rank highest. No log or other transformation is applied."""
+    y = np.asarray(y)
+    X_g1 = X[y == GROUP_1]      # ground1 = death
+    X_g0 = X[y == GROUP_0]      # ground0 = alive
+
+    names, p_values = [], []
+    for col in X.columns:
+        x1 = X_g1[col].dropna()
+        x0 = X_g0[col].dropna()
+        if len(x0) < 2 or len(x1) < 2:
+            continue
+
+        unique_vals = pd.unique(X[col].dropna())
+        is_binary = set(unique_vals).issubset({0, 1})
+
+        if is_binary:
+            a = (x1 == 1).sum()
+            b = (x1 == 0).sum()
+            c = (x0 == 1).sum()
+            d = (x0 == 0).sum()
+            _, p = stats.fisher_exact([[a, b], [c, d]])
+        else:
+            _, p = stats.ttest_ind(x1, x0, equal_var=False)
+
+        names.append(col)
+        p_values.append(p)
+
+    if not names:
+        return pd.Series(dtype=float)
+
+    p_adj = multipletests(np.asarray(p_values), method="fdr_bh")[1]
+    scores = pd.Series(-p_adj, index=names)
+
+    # Features that could not be tested are placed last
+    missing = [c for c in X.columns if c not in names]
+    if missing:
+        scores = pd.concat([scores, pd.Series(-np.inf, index=missing)])
+    return scores
+
+
 SCORERS = {
     "RF": score_rf,
     "RF-SHAP": score_rf_shap,
@@ -163,6 +221,7 @@ SCORERS = {
     "GMM": score_gmm,
     "HVGS": score_hvgs,
     "Spearman": score_spearman,
+    "DEA": score_dea,
 }
 
 # Classifier used for cross-validation, per method
@@ -174,6 +233,7 @@ CV_CLASSIFIER = {
     "GMM": "RF",
     "HVGS": "RF",
     "Spearman": "RF",
+    "DEA": "RF",
 }
 
 
